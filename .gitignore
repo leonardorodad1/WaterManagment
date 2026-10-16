@@ -1,0 +1,4 @@
+#añadir archivos que no se tienen que subir al github
+
+*.db
+*.db-journal

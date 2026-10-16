@@ -1,0 +1,36 @@
+import socket
+import sys
+
+HEADER = 64
+PORT = 5050
+FORMAT = 'utf-8'
+
+def send(msg):
+    message = msg.encode(FORMAT)
+    msg_length = len(message)
+    send_length = str(msg_length).encode(FORMAT)
+    send_length += b' ' * (HEADER - len(send_length))
+    client.send(send_length)
+    client.send(message)
+    
+########## MAIN ##########
+
+#Encargado de leer los argumentos y pasar el mensaje a la central
+
+if  (len(sys.argv) == 4):
+    SERVER = sys.argv[1]
+    PORT = int(sys.argv[2])
+    ADDR = (SERVER, PORT)
+    
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client.connect(ADDR)
+    print (f"Establecida conexión en [{ADDR}]")
+
+    msg=sys.argv[3]
+    print("Envio al servidor: ", msg)
+    send(msg)
+    print("Recibo del Servidor: ", client.recv(2048).decode(FORMAT))
+
+    client.close()
+else:
+    print ("Oops!. Parece que algo falló. Necesito estos argumentos: <ServerIP> <Puerto> <Mensaje>")
