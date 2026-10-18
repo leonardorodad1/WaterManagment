@@ -1,12 +1,10 @@
 import socket 
 import threading
+import sys
 import sqlite3
 
 #Const de configuración
 HEADER = 64
-PORT = 5050
-SERVER = socket.gethostbyname(socket.gethostname())
-ADDR = (SERVER, PORT)
 FORMAT = 'utf-8'
 
 def handle_client(conn, addr):
@@ -22,7 +20,7 @@ def handle_client(conn, addr):
         
         partes = msg.split("#")
         
-        
+        #caso de registar una 
         if len(partes) ==3:
             tipo = partes[0]
             idestacion=partes[1]
@@ -67,9 +65,36 @@ def handle_client(conn, addr):
                         #TODO VER SI RENTA MAS USARLO CON UN DICCIONARIO Y ASI NO USAR ? ? ?            
                         conn.send(f"STATUS#OK#Estacion registrada correctamente".encode(FORMAT))
                     
+                    conexion.close()
+                    
+        elif partes[0]=="AUT" and len(partes)==2:
+            id_ws=partes[1]
+            conexion=sqlite3.connect("watermanagment.db")
+            
+            cursor=conexion.cursor()
+            cursor.execute("SELECT * FROM estaciones")                    
+
+            listaestaciones=cursor.fetchall()
+            
+            existe=False
+            #buscamos la estaicon
+            for estacion in listaestaciones:
+                if estacion[0]==id_ws:
+                    existe=True
+                    ubicacion=estacion[1]
+                    break
+            if existe:
+                #en caso de que exista, acutalizamos estaddo
+                cursor.execute("UPDATE estaciones SET estado='Available' where id_estacion=:idbuscado", {"idbuscado" : id_ws})
+                conexion.commit()
+                conn.send(f"STATUS#OK#Autenticada en {ubicacion}".encode(FORMAT))
+            else:
+                conn.send("STATUS#ERROR#Estacion no registrada".encode(FORMAT))
+            
+            conexion.close()     
         else:
             print("Error intentando leer el mensaje")
-            conn.send("El mensaje pasado no es correcto, formato correcto: 'REGISTRO#ID_ESTACION#UBICACION'".encode(FORMAT))
+            conn.send("El mensaje pasado no es correcto, formato registro: 'REGISTRO#ID_ESTACION#UBICACION', formato autenticar: 'AUT#ID_ESTACION'".encode(FORMAT))
             
     print("ADIOS. TE ESPERO EN OTRA OCASION")
     conn.close()
@@ -110,13 +135,26 @@ def cargarEstaciones():
 #Encargada de recibir pediciones y gestionar las conexiones con los clientes
 
 
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.bind(ADDR) #asociamos el socket a la direccion y puerto del servidor
 
-print("[STARTING] Servidor inicializándose...")
-#cargamos las estaciones de la base de datos
-print("Estaciones Registradas")
-cargarEstaciones()
+if len(sys.argv)== 4:
+    
+    #puerto de escucha que ofrece al ws_wm_m
+    PORT= int(sys.argv[1])
+    
+    SERVER = "0.0.0.0"#Acepta conexiones de cualquier interfaz
+    ADDR = (SERVER, PORT)
+    
+    IP_KAFKA=sys.argv[2]
+    PORT_KAFKA=int(sys.argv[3])
+    
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(ADDR) #asociamos el socket a la direccion y puerto del servidor
 
-start()
+    print("[STARTING] Servidor inicializándose...")
+    #cargamos las estaciones de la base de datos
+    print("Estaciones Registradas")
+    cargarEstaciones()
 
+    start()
+else:
+    print("Argumentos incorrectos. Prueba: python3 WM_CENTRAL.py <Puerto> <Ip_Kafka> <Puerto_Kafka>")
