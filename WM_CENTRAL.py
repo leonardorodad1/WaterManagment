@@ -49,7 +49,7 @@ def handle_client(conn, addr):
                     existe=False
                     if len(listaestaciones)!=0:
                         #buscamos si hay algo asi:
-                        #('WS-04', 'River Park', 'ok') buscamos id
+                        #('WS-04', 'River Park', 'AVAILABLE') buscamos id
                         for estacion in listaestaciones:
                             if estacion[0] == idestacion:
                                 existe=True
@@ -60,7 +60,7 @@ def handle_client(conn, addr):
                         conn.send(f"El id introducido ya está registrado".encode(FORMAT))
                     else:                                
                         #lo meto a la base de datos
-                        cursor.execute("INSERT INTO estaciones (id_estacion, ubicacion, estado) VALUES (?,?,'ok')",(idestacion,ubicacion))
+                        cursor.execute("INSERT INTO estaciones (id_estacion, ubicacion, estado) VALUES (?,?,'AVAILABLE')",(idestacion,ubicacion))
                         conexion.commit()
                         #TODO VER SI RENTA MAS USARLO CON UN DICCIONARIO Y ASI NO USAR ? ? ?            
                         conn.send(f"STATUS#OK#Estacion registrada correctamente".encode(FORMAT))
@@ -85,7 +85,7 @@ def handle_client(conn, addr):
                     break
             if existe:
                 #en caso de que exista, acutalizamos estaddo
-                cursor.execute("UPDATE estaciones SET estado='Available' where id_estacion=:idbuscado", {"idbuscado" : id_ws})
+                cursor.execute("UPDATE estaciones SET estado='AVAILABLE' where id_estacion=:idbuscado", {"idbuscado" : id_ws})
                 conexion.commit()
                 conn.send(f"STATUS#OK#Autenticada en {ubicacion}".encode(FORMAT))
             else:
@@ -118,7 +118,7 @@ def cargarEstaciones():
     conexion = sqlite3.connect("watermanagment.db")
     cursor= conexion.cursor()
     #las dejamos en desconectadas al iniciarlas
-    cursor.execute("UPDATE estaciones SET estado=:nuevoestado", {"nuevoestado" : "Disconnected"})
+    cursor.execute("UPDATE estaciones SET estado=:nuevoestado", {"nuevoestado" : "DISCONNECTED"})
     
     conexion.commit()
     
@@ -141,7 +141,7 @@ if len(sys.argv)== 4:
     #puerto de escucha que ofrece al ws_wm_m
     PORT= int(sys.argv[1])
     
-    SERVER = "0.0.0.0"#Acepta conexiones de cualquier interfaz
+    SERVER = "0.0.0.0"#Acepta conexiones de cualquier red
     ADDR = (SERVER, PORT)
     
     IP_KAFKA=sys.argv[2]
