@@ -21,7 +21,7 @@ def handle_client(conn, addr):
         partes = msg.split("#")
         
         #caso de registar una 
-        if len(partes) ==3:
+        if len(partes) ==3 and partes[0]!="AVERIA":
             tipo = partes[0]
             idestacion=partes[1]
             ubicacion=partes[2]        
@@ -91,7 +91,25 @@ def handle_client(conn, addr):
             else:
                 conn.send("STATUS#ERROR#Estacion no registrada".encode(FORMAT))
             
-            conexion.close()     
+            conexion.close()   
+        #CONTROLO CASO DE AVERIA RECIBO AVERIA#IDESTACION#ESTADO
+        elif partes[0]=="AVERIA" and len(partes)==3:
+            
+            id_ws=partes[1]
+            estado_ws=partes[2]
+            conexion=sqlite3.connect("watermanagment.db")
+            
+            cursor=conexion.cursor()
+            if estado_ws=="LEAK":
+                
+                cursor.execute("UPDATE estaciones set estado='LEAK' where id_estacion=:idbuscado",{"idbuscado": id_ws})
+                print(f"Estación {id_ws} cambia su estado a LEAK, fuga detectada")
+            elif estado_ws=="AVAILABLE":
+                cursor.execute("UPDATE estaciones set estado='AVAILABLE' where id_estacion=:idbuscado",{"idbuscado": id_ws})
+                print(f"Estación {id_ws} cambia su estado a AVAILABLE, fuga resuelta")
+            conexion.commit()
+            cursor.close()
+            conn.send(f"STATUS#OK#Estado de {id_ws} cambia a {estado_ws}".encode(FORMAT))
         else:
             print("Error intentando leer el mensaje")
             conn.send("El mensaje pasado no es correcto, formato registro: 'REGISTRO#ID_ESTACION#UBICACION', formato autenticar: 'AUT#ID_ESTACION'".encode(FORMAT))
@@ -133,8 +151,6 @@ def cargarEstaciones():
 ######################### MAIN ##########################
 
 #Encargada de recibir pediciones y gestionar las conexiones con los clientes
-
-
 
 if len(sys.argv)== 4:
     

@@ -113,6 +113,7 @@ if  (len(sys.argv) == 5):
     #enviamos un mensaje cada sec para comprobar la salud
     #si no recibo respuesta enviamos a central mensaje de averia
     
+    estado_actual="OK"
     conn_engine.settimeout(1)
     while True:
         try:
@@ -127,10 +128,29 @@ if  (len(sys.argv) == 5):
 
         print(f"Engine responde: {salud}")
         #si se recibe KO enviamos mensaje de averia 
-        if salud!="OK":
-            print(f"Averia en {ID_WS}")
+        if salud!="OK" and estado_actual=="OK":
+            estado_actual="KO"
+            print(f"Averia en {ID_WS}. Avisando a la Central...")
             #avisamos a la central
-        
+            central=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            central.connect(ADDR)
+            msg=f"AVERIA#{ID_WS}#LEAK"
+            print("Envio al servidor: ", msg)
+            send(central,msg)
+            respuesta=central.recv(2048).decode(FORMAT)
+            print("Recibo del Servidor: ", respuesta)
+            central.close()
+        elif salud=="OK" and estado_actual=="KO":
+            estado_actual="OK"
+            print(f"Avería resuelta en {ID_WS}. Pasando de LEAK -> AVAILABLE")
+            central = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            central.connect(ADDR)
+            send(central, f"AVERIA#{ID_WS}#AVAILABLE")
+            respuesta = central.recv(2048).decode(FORMAT)
+            print("Respuesta de Central:", respuesta)
+            central.close()
+            
+            
         time.sleep(1)
         
     servidor.close()#moverlo luego de hacer el aviso a la central
