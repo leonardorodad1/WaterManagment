@@ -9,6 +9,7 @@ import time#para poder preguntar al engine su estado
 
 HEADER = 64
 FORMAT = 'utf-8'
+TIMEOUT_CENTRAL = 3  # segundos máximos esperando a la central
 
 def send(objeto_socket,msg):
     message = msg.encode(FORMAT)
@@ -26,6 +27,28 @@ def receive(objeto_socket):
     return objeto_socket.recv(msg_length).decode(FORMAT)
 
 
+def enviar_a_central(addr, msg):
+    """Abre una conexión con la central, envía msg y devuelve la respuesta.
+    Devuelve None si no se ha podido hablar con la central (caída, red, timeout...).
+    Nunca lanza excepción de red: el que llama decide qué hacer."""
+    central = None
+    try:
+        central = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        central.settimeout(TIMEOUT_CENTRAL)
+        central.connect(addr)
+        send(central, msg)
+        respuesta = central.recv(2048).decode(FORMAT)
+        if respuesta == "":
+            return None  # la central cerró sin contestar
+        return respuesta
+    except (OSError, ValueError):
+        # OSError cubre ConnectionRefusedError, ConnectionResetError, timeout, etc.
+        return None
+    finally:
+        if central is not None:
+            central.close()
+ 
+
 ########## MAIN ##########
 
 #Encargado de leer los argumentos y pasar el mensaje a la central
@@ -39,21 +62,14 @@ if  (len(sys.argv) == 5):
     ADDR = (IP_C, PORT_C)
     ID_WS=sys.argv[4]
     
-    try:
-        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect(ADDR)
-        print (f"Establecida conexión en [{ADDR}]")
-    except Exception as e:
-        #TODO revisar las excepciones, y ver cual es la correcta aqui
-        print("Error: No se puede conectar con la central")
-        sys.exit(1) #salida  por fallo
-    msg=f"AUT#{ID_WS}"
+    msg = f"AUT#{ID_WS}"
     print("Envio al servidor: ", msg)
-    send(client,msg)
-    respuesta=client.recv(2048).decode(FORMAT)
+    respuesta = enviar_a_central(ADDR, msg)
+    if respuesta is None:
+        print("Error: Imposible conectar con WM_Central")
+        sys.exit(1)
     print("Recibo del Servidor: ", respuesta)
-    client.close()
-    
+        
     partes=respuesta.split('#')
     #TODO Hacer comprobacion de que ID_WS tiene formato WS-Numero
     #por ahora asumo que el cliente lo mete bien
@@ -78,16 +94,14 @@ if  (len(sys.argv) == 5):
         #preguntar a victorai si le parece mejor q termine programa o hacer la validacion
         # en un while y asi q la ubicacion sea valida
                     
-        client=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect(ADDR)
-        #Pasamos el registro como mensaje
-        msg=f"REGISTRO#{ID_WS}#{ubicacion}"        
-        print("Envio al servidor: ",msg)
-        send(client, msg)
-        respuesta=client.recv(2048).decode(FORMAT)  
-        print("Recibo del servidor: ",respuesta)
-        client.close()
-        
+        msg = f"REGISTRO#{ID_WS}#{ubicacion}"
+        print("Envio al servidor: ", msg)
+        respuesta = enviar_a_central(ADDR, msg)
+        if respuesta is None:
+            print("Error: Imposible conectar con WM_Central")
+            sys.exit(1)
+        print("Recibo del servidor: ", respuesta)
+            
     #Si estaba registrada nos dará mensaje de STATUS#ok
     #SI O SI se va autenticar porque controlamos con msg el formato esperado
     #En wm_central se hacen las validaciones y aqui controlamos que la ubicaicon sea valida
@@ -113,13 +127,15 @@ if  (len(sys.argv) == 5):
     #enviamos un mensaje cada sec para comprobar la salud
     #si no recibo respuesta enviamos a central mensaje de averia
     
-    estado_actual="OK"
+    estado_real = "OK"        # lo que dice el engine ahora mismo
+    estado_notificado = "OK"  # lo último que la central sabe con seguridad
+    central_caida = False     # True si falló la última comunicación con la central
     conn_engine.settimeout(1)
     while True:
         try:
             send(conn_engine,"CONEXION")
             salud=receive(conn_engine)
-        except OSError as e:# ver excepciones de conexion y ver cual usar
+        except (OSError, ValueError):# ver excepciones de conexion y ver cual usar
             #opcion IA, mirar si es la correcta
             salud="KO"
 
@@ -128,28 +144,36 @@ if  (len(sys.argv) == 5):
 
         print(f"Engine responde: {salud}")
         #si se recibe KO enviamos mensaje de averia 
-        if salud!="OK" and estado_actual=="OK":
-            estado_actual="KO"
-            print(f"Averia en {ID_WS}. Avisando a la Central...")
-            #avisamos a la central
-            central=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            central.connect(ADDR)
-            msg=f"AVERIA#{ID_WS}#LEAK"
+        estado_real = "OK" if salud == "OK" else "KO"
+
+        # Si la central estaba caída, intentamos reautenticarnos
+        if central_caida:
+            resp = enviar_a_central(ADDR, f"AUT#{ID_WS}")
+            if resp is None:
+                print("Imposible conectar con WM_Central. Reintentando...")
+            else:
+                print("Recibo del Servidor: ", resp)
+                print("Conexión con WM_Central restablecida")
+                central_caida = False
+                estado_notificado = "OK"   # tras el AUT la central pone AVAILABLE
+
+        # Si hay un cambio pendiente de notificar, lo intentamos
+        if not central_caida and estado_real != estado_notificado:
+            if estado_real == "KO":
+                print(f"Averia en {ID_WS}. Avisando a la Central...")
+                msg = f"AVERIA#{ID_WS}#LEAK"
+            else:
+                print(f"Avería resuelta en {ID_WS}. Pasando de LEAK -> AVAILABLE")
+                msg = f"AVERIA#{ID_WS}#AVAILABLE"
+
             print("Envio al servidor: ", msg)
-            send(central,msg)
-            respuesta=central.recv(2048).decode(FORMAT)
-            print("Recibo del Servidor: ", respuesta)
-            central.close()
-        elif salud=="OK" and estado_actual=="KO":
-            estado_actual="OK"
-            print(f"Avería resuelta en {ID_WS}. Pasando de LEAK -> AVAILABLE")
-            central = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            central.connect(ADDR)
-            send(central, f"AVERIA#{ID_WS}#AVAILABLE")
-            respuesta = central.recv(2048).decode(FORMAT)
-            print("Respuesta de Central:", respuesta)
-            central.close()
-            
+            resp = enviar_a_central(ADDR, msg)
+            if resp is None:
+                central_caida = True   # NO tocamos estado_notificado: se reintenta
+                print("Imposible conectar con WM_Central. Se reintentará el aviso.")
+            else:
+                estado_notificado = estado_real
+                print("Recibo del Servidor: ", resp) 
             
         time.sleep(1)
         
