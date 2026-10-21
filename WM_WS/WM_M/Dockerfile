@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY WM_WS_M.py .
+
+ENV PYTHONUNBUFFERED=1
+ENTRYPOINT ["python", "WM_WS_M.py"]

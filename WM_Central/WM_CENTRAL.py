@@ -110,6 +110,7 @@ def handle_client(conn, addr):
             conexion.commit()
             cursor.close()
             conn.send(f"STATUS#OK#Estado de {id_ws} cambia a {estado_ws}".encode(FORMAT))
+            conexion.close()
         else:
             print("Error intentando leer el mensaje")
             conn.send("El mensaje pasado no es correcto, formato registro: 'REGISTRO#ID_ESTACION#UBICACION', formato autenticar: 'AUT#ID_ESTACION'".encode(FORMAT))
@@ -135,6 +136,7 @@ def start():
 def cargarEstaciones():
     conexion = sqlite3.connect("watermanagment.db")
     cursor= conexion.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS estaciones (id_estacion TEXT PRIMARY KEY,ubicacion TEXT NOT NULL,estado TEXT NOT NULL)")
     #las dejamos en desconectadas al iniciarlas
     cursor.execute("UPDATE estaciones SET estado=:nuevoestado", {"nuevoestado" : "DISCONNECTED"})
     
