@@ -2,3 +2,5 @@
 
 *.db
 *.db-journal
+*.venv
+*venv

@@ -48,6 +48,11 @@ def enviar_a_central(addr, msg):
         if central is not None:
             central.close()
  
+def cerrar_engine(conn):
+    try:
+        conn.close()
+    except OSError:
+        pass
 
 ########## MAIN ##########
 
@@ -113,15 +118,18 @@ if  (len(sys.argv) == 5):
         print("La central no ha aceptado la estación. Cierro el monitor.")
         sys.exit(1)
         
-    #TODO PARTE DEL ENGINE
     #servidor para el engine
     servidor=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #con setsockopt podremos reutilizar sin esperar el puerto si se reinicida el socket
+    servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     ADDR_ENGINE=("0.0.0.0",PORT_M)
     servidor.bind(ADDR_ENGINE) # con esta ip podrá escuchar desde otros pc y docker
     servidor.listen()
     print(f"Esperando al Engine en el puerto {PORT_M}")            
     
+    #esperamos a que se conecte un Engine, hasta que no haya engine no vigilamos nada
     conn_engine, addr_engine= servidor.accept()
+    conn_engine.settimeout(1)
     print(f"Engine conectado desde {addr_engine}")
     
     #enviamos un mensaje cada sec para comprobar la salud
@@ -130,18 +138,45 @@ if  (len(sys.argv) == 5):
     estado_real = "OK"        # lo que dice el engine ahora mismo
     estado_notificado = "OK"  # lo último que la central sabe con seguridad
     central_caida = False     # True si falló la última comunicación con la central
-    conn_engine.settimeout(1)
+    #si el engine cae, seguiremos vigilando, aceptaremos luego su vuelta sin
+    #reiniciar el mnitor
+    servidor.settimeout(1)
+    
     while True:
-        try:
-            send(conn_engine,"CONEXION")
-            salud=receive(conn_engine)
-        except (OSError, ValueError):# ver excepciones de conexion y ver cual usar
-            #opcion IA, mirar si es la correcta
-            salud="KO"
+        #si no hay engine conectado probamos a aceptar uno nuevo
+        if conn_engine is None:
+            
+            #esperamos a q se conecte un Engine
+            try:
+                conn_engine, addr_engine = servidor.accept()
+                conn_engine.settimeout(1)
+                print(f"Engine reconectado desde {addr_engine}")
+            except OSError:
+                conn_engine=None
 
-        if salud=="":#Por si el engine ha cerrado conex
+        if conn_engine is None: #Por si el engine ha cerrado conexion o no se ha conectado
             salud="KO"
-
+        else:
+            conexion_rota=False
+            try:
+                send(conn_engine, "CONEXION")
+                salud=receive(conn_engine)
+            except OSError:
+                salud="KO"
+                conexion_rota=True      
+           
+            if salud=="":#engine ha cerrado conexion
+               salud="KO"
+               conexion_rota=True
+           
+           
+           #si la conexion se ha rto, descartamos conn_engine 
+           # y asi en el proximo accept se aceptará al engine cuando vuelva
+            if conexion_rota == True:
+                
+                cerrar_engine(conn_engine)
+                conn_engine=None
+            
         print(f"Engine responde: {salud}")
         #si se recibe KO enviamos mensaje de averia 
         estado_real = "OK" if salud == "OK" else "KO"
