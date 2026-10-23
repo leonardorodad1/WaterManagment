@@ -1,8 +1,10 @@
+import os
 import socket 
 import threading
 import sys
 import sqlite3
-from confluent_kafka import Consumer,Producer
+import time
+from confluent_kafka import Consumer,Producer, KafkaError
 import json
 
 #Const de configuración
@@ -10,6 +12,8 @@ HEADER = 64
 FORMAT = 'utf-8'
 TOPIC_PETICIONES = "wm.peticiones"
 TOPIC_RESPUESTAS = "wm.respuestas"
+ESPERA_REINTENTO_KAFKA = 5 #segundos que espera si falla la conexion con kafka antes de reintentar
+DB_PATH = os.environ.get("WM_DB_PATH", "watermanagment.db")  # Ruta de la base de datos, se puede configurar mediante variable de entorno
 
 def handle_client(conn, addr):
     
@@ -43,7 +47,7 @@ def handle_client(conn, addr):
                     print(f"Ubicacion: {ubicacion}")
                     #compruebo que no existe ya en la base de datos
                     
-                    conexion = sqlite3.connect("watermanagment.db")
+                    conexion = sqlite3.connect(DB_PATH)
                     cursor= conexion.cursor()
                     
                     cursor.execute("SELECT * FROM estaciones")                    
@@ -73,7 +77,7 @@ def handle_client(conn, addr):
                     
         elif partes[0]=="AUT" and len(partes)==2:
             id_ws=partes[1]
-            conexion=sqlite3.connect("watermanagment.db")
+            conexion=sqlite3.connect(DB_PATH)
             
             cursor=conexion.cursor()
             cursor.execute("SELECT * FROM estaciones")                    
@@ -101,7 +105,7 @@ def handle_client(conn, addr):
             
             id_ws=partes[1]
             estado_ws=partes[2]
-            conexion=sqlite3.connect("watermanagment.db")
+            conexion=sqlite3.connect(DB_PATH)
             
             cursor=conexion.cursor()
             if estado_ws=="LEAK":
@@ -121,7 +125,19 @@ def handle_client(conn, addr):
             
     print("ADIOS. TE ESPERO EN OTRA OCASION")
     conn.close()
-    
+
+def atender_client(conn, addr):
+    #Envoltorio: un cliente que se comporta mal (mensaje raro, corte de red...)
+    #solo afecta a su propio hilo y la central sigue atendiendo al resto
+    try:
+        handle_client(conn, addr)
+    except (OSError, ValueError, sqlite3.Error) as e:
+        print(f"[ERROR] Atendiendo a {addr}: {e}")
+    finally:
+        conn.close()
+  
+
+
 def start():
     server.listen()
     print(f"[LISTENING] Servidor a la escucha en {SERVER}")
@@ -131,14 +147,14 @@ def start():
     while True:
         conn, addr = server.accept() # aceptamos la conexion de un cliente y devuelve un socket para comunicarse con el y la direccion del cliente
         
-        thread = threading.Thread(target=handle_client,args=(conn, addr))   
+        thread = threading.Thread(target=atender_client,args=(conn, addr))   
         
         thread.start()
         
         CONEX_ACTIVAS = threading.active_count() # esto crea un hilo para cada cliente que se conecta y lo maneja de forma independiente 
 
 def cargarEstaciones():
-    conexion = sqlite3.connect("watermanagment.db")
+    conexion = sqlite3.connect(DB_PATH)
     cursor= conexion.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS estaciones (id_estacion TEXT PRIMARY KEY,ubicacion TEXT NOT NULL,estado TEXT NOT NULL)")
     #las dejamos en desconectadas al iniciarlas
@@ -158,13 +174,13 @@ def cargarEstaciones():
 #Autorizada si estacion dispo
 #Denegada si no esta dispo
 def evaluarPeticion(peticion):
-    conexion = sqlite3.connect("watermanagment.db")
-    cursor = conexion.cursor()
-    
-    cursor.execute("SELECT estado FROM estaciones where id_estacion=:idbuscado", {"idbuscado": peticion["ws"]})
-    fila=cursor.fetchone()
-
-    conexion.close()
+    conexion = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conexion.cursor()
+        cursor.execute("SELECT estado FROM estaciones where id_estacion=:idbuscado", {"idbuscado": peticion["ws"]})
+        fila=cursor.fetchone()
+    finally:
+        conexion.close()
     
     if fila is None:
         return "DENEGADA", "estación no registrada"
@@ -183,46 +199,69 @@ def responderPeticion(producer,peticion,res,motivo):
                "motivo": motivo}
     producer.produce(TOPIC_RESPUESTAS, key=peticion["operador"], value = json.dumps(respuesta))
 
+def procesarPeticion(consumer, producer, msg):
+    try:
+        peticion=json.loads(msg.value().decode(FORMAT))
+        operador = peticion["operador"]
+        ws=peticion["ws"]
+        peticion["ts"]#comprobamos que existe
+    except (json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError, AttributeError):
+        #mensaje mal formado: lo descartamos y lo damos por leido para no atascarnos con el
+        print("Formato de peticion incorrecto, se descarta")
+        consumer.commit(message=msg, asynchronous=False)
+        return
+    
+    print(f"Peticion de {operador} para {ws}")
+    responderPeticion(producer,peticion,"RECIBIDA","Peticion recibida, comprobando estado")
+ 
+    resultado,motivo=evaluarPeticion(peticion)
+    print(f"Peticion de {operador} para {ws} -> {resultado}, {motivo}")        
+    responderPeticion(producer,peticion, resultado,motivo)
+    
+    #enviamos las respuestas
+    pendientes = producer.flush(10)
+    if pendientes == 0:
+        #solo damos la peticion por leida cuando ya hemos respondido
+        consumer.commit(message=msg, asynchronous=False)
+    else:
+        print("No se ha podido responder al operador (Kafka no disponible)")
 #
 def escucharPeticiones():
-    consumer= Consumer({
-        "bootstrap.servers":f"{IP_KAFKA}:{PORT_KAFKA}",
-        "group.id":"wm-central",
-        "auto.offset.reset":"earliest",
-        "enable.auto.commit": False
-    })
-    producer=Producer({"bootstrap.servers":f"{IP_KAFKA}:{PORT_KAFKA}"})
-    consumer.subscribe([TOPIC_PETICIONES])
-    print(f"Escuchando el topic {TOPIC_PETICIONES}...")
-    
     while True:
-        msg=consumer.poll()
-        
-        if msg is not None:
-            try:
-                peticion=json.loads(msg.value().decode(FORMAT))
-                operador = peticion["operador"]
-                ws=peticion["ws"]
-                peticion["ts"]
+        consumer = None
+        try:
+            consumer= Consumer({
+                "bootstrap.servers":f"{IP_KAFKA}:{PORT_KAFKA}",
+                "group.id":"wm-central",
+                "auto.offset.reset":"earliest",
+                "enable.auto.commit": False
+            })
+            producer=Producer({"bootstrap.servers":f"{IP_KAFKA}:{PORT_KAFKA}"})
+            consumer.subscribe([TOPIC_PETICIONES])
+            print(f"Escuchando el topic {TOPIC_PETICIONES}...")
+            
+            while True:
+                msg=consumer.poll(1.0)
                 
-            except json.JSONDecodeError:
-                print("Formato de peticion incorrecto")
-                consumer.commit(message=msg, asynchronous=False)
-                continue
-            
-            print(f"Peticion de {operador} para {ws}")
-            responderPeticion(producer,peticion,"RECIBIDA","Peticion recibida, comprobando estado")
-        
-            resultado,motivo=evaluarPeticion(peticion)
-            print(f"Peticion de {operador} para {ws} -> {resultado}, {motivo}")        
-            responderPeticion(producer,peticion, resultado,motivo)
-            
-            #enviamos las peticiones
-            pendientes = producer.flush(10)
-            if pendientes == 0:
-                consumer.commit(message=msg, asynchronous=False)
-            else:
-                print("No se ha podido responder al operador (Kafka no disponible)")
+                if msg is None:
+                    continue
+                
+                if msg.error():
+                    if msg.error().code() not in (KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError._PARTITION_EOF):
+                        print(f"[KAFKA] {msg.error()}")
+                    continue
+                
+                procesarPeticion(consumer, producer, msg)
+                
+        except Exception as e:
+            print(f"[KAFKA] Error en el hilo de peticiones: {e}. Reintentando en {ESPERA_REINTENTO_KAFKA} s")
+        finally:
+            if consumer is not None:
+                try:
+                    consumer.close()
+                except Exception:
+                    pass
+        time.sleep(ESPERA_REINTENTO_KAFKA)
 ######################### MAIN ##########################
 
 #Encargada de recibir pediciones y gestionar las conexiones con los clientes
@@ -239,6 +278,7 @@ if len(sys.argv)== 4:
     PORT_KAFKA=int(sys.argv[3])
     
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) #reinicia central sin esperar a que el sistema libere el puerto
     server.bind(ADDR) #asociamos el socket a la direccion y puerto del servidor
 
     print("[STARTING] Servidor inicializándose...")

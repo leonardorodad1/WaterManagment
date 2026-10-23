@@ -151,7 +151,7 @@ if  (len(sys.argv) == 5):
                 conn_engine, addr_engine = servidor.accept()
                 conn_engine.settimeout(1)
                 print(f"Engine reconectado desde {addr_engine}")
-            except OSError:
+            except (OSError, ValueError):
                 conn_engine=None
 
         if conn_engine is None: #Por si el engine ha cerrado conexion o no se ha conectado
@@ -161,7 +161,7 @@ if  (len(sys.argv) == 5):
             try:
                 send(conn_engine, "CONEXION")
                 salud=receive(conn_engine)
-            except OSError:
+            except (OSError, ValueError):
                 salud="KO"
                 conexion_rota=True      
            

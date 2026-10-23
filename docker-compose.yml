@@ -59,7 +59,7 @@ services:
     command: ["broker", "29092","OP-01"]
     stdin_open: true
     tty: true
-    depends_on: [ws01-monitor]
+    depends_on: [central]
     restart: "no"
 volumes:
   kafka_data:
