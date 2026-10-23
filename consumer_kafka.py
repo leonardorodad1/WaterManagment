@@ -12,7 +12,7 @@ consumer_config = {
 }
 
 TOPIC = "wm.peticiones"
-DB = "WM_CENTRAL/watermanagment.db"
+DB = "WM_Central/watermanagment.db"
  
  
 def evaluar(peticion):

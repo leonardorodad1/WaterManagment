@@ -53,7 +53,14 @@ services:
     tty: true
     depends_on: [ws01-monitor]
     restart: on-failure
-
+  fo01:
+    build: ./WM_FO
+    container_name: fo01
+    command: ["broker", "29092","OP-01"]
+    stdin_open: true
+    tty: true
+    depends_on: [ws01-monitor]
+    restart: "no"
 volumes:
   kafka_data:
   central_data:

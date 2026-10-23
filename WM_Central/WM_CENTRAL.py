@@ -2,10 +2,14 @@ import socket
 import threading
 import sys
 import sqlite3
+from confluent_kafka import Consumer,Producer
+import json
 
 #Const de configuración
 HEADER = 64
 FORMAT = 'utf-8'
+TOPIC_PETICIONES = "wm.peticiones"
+TOPIC_RESPUESTAS = "wm.respuestas"
 
 def handle_client(conn, addr):
     
@@ -150,6 +154,75 @@ def cargarEstaciones():
         
         print(f"Id: {estacion[0]} Ubicacion: {estacion[1]} Estado: {estacion[2]}")    
 
+#Devolvemos el resultado de la peticion del FO dependiendo del estado de la estacion
+#Autorizada si estacion dispo
+#Denegada si no esta dispo
+def evaluarPeticion(peticion):
+    conexion = sqlite3.connect("watermanagment.db")
+    cursor = conexion.cursor()
+    
+    cursor.execute("SELECT estado FROM estaciones where id_estacion=:idbuscado", {"idbuscado": peticion["ws"]})
+    fila=cursor.fetchone()
+
+    conexion.close()
+    
+    if fila is None:
+        return "DENEGADA", "estación no registrada"
+    if fila[0] != "AVAILABLE":
+        return "DENEGADA", f"estación en estado {fila[0]}"
+    return "AUTORIZADA", "estacion disponible"
+
+#dejamos en el wm.respuesta un mensajae para el FO que hizo la peticion
+def responderPeticion(producer,peticion,res,motivo):
+
+    respuesta={"operador": peticion["operador"], 
+               "ws":peticion["ws"],
+               "ts" : peticion["ts"], 
+               #usamos mismo ts para quedarnos luego en el operador el resultado correcto
+               "resultado": res,
+               "motivo": motivo}
+    producer.produce(TOPIC_RESPUESTAS, key=peticion["operador"], value = json.dumps(respuesta))
+
+#
+def escucharPeticiones():
+    consumer= Consumer({
+        "bootstrap.servers":f"{IP_KAFKA}:{PORT_KAFKA}",
+        "group.id":"wm-central",
+        "auto.offset.reset":"earliest",
+        "enable.auto.commit": False
+    })
+    producer=Producer({"bootstrap.servers":f"{IP_KAFKA}:{PORT_KAFKA}"})
+    consumer.subscribe([TOPIC_PETICIONES])
+    print(f"Escuchando el topic {TOPIC_PETICIONES}...")
+    
+    while True:
+        msg=consumer.poll()
+        
+        if msg is not None:
+            try:
+                peticion=json.loads(msg.value().decode(FORMAT))
+                operador = peticion["operador"]
+                ws=peticion["ws"]
+                peticion["ts"]
+                
+            except json.JSONDecodeError:
+                print("Formato de peticion incorrecto")
+                consumer.commit(message=msg, asynchronous=False)
+                continue
+            
+            print(f"Peticion de {operador} para {ws}")
+            responderPeticion(producer,peticion,"RECIBIDA","Peticion recibida, comprobando estado")
+        
+            resultado,motivo=evaluarPeticion(peticion)
+            print(f"Peticion de {operador} para {ws} -> {resultado}, {motivo}")        
+            responderPeticion(producer,peticion, resultado,motivo)
+            
+            #enviamos las peticiones
+            pendientes = producer.flush(10)
+            if pendientes == 0:
+                consumer.commit(message=msg, asynchronous=False)
+            else:
+                print("No se ha podido responder al operador (Kafka no disponible)")
 ######################### MAIN ##########################
 
 #Encargada de recibir pediciones y gestionar las conexiones con los clientes
@@ -173,6 +246,9 @@ if len(sys.argv)== 4:
     print("Estaciones Registradas")
     cargarEstaciones()
 
+    #HILO POR CADA PETICION
+    hilo_kafka = threading.Thread(target=escucharPeticiones, daemon=True)
+    hilo_kafka.start()
     start()
 else:
     print("Argumentos incorrectos. Prueba: python3 WM_CENTRAL.py <Puerto> <Ip_Kafka> <Puerto_Kafka>")

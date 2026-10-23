@@ -1,6 +1,6 @@
 import sqlite3
 #abrimos base de datos
-conexion=sqlite3.connect("watermanagment.db")
+conexion=sqlite3.connect("WM_CENTRAL/watermanagment.db")
 #creamos curson para ejecutrar las consultas
 cursor=conexion.cursor()
 
