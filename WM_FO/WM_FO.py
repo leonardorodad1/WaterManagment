@@ -130,15 +130,12 @@ def leerFichero(nombre):
 
 ######################### MAIN ##########################
 
-if len(sys.argv)==4:
+if len(sys.argv)==4 or len(sys.argv)==5:
     
     IP_K = sys.argv[1]
     PORT_K = int(sys.argv[2])
     ID_OPERADOR = sys.argv[3]
     FICHERO = sys.argv[4] if len(sys.argv)==5 else None
-    #preguntar si pasamos fichero como argumento o que, no entiendo
-    #como leer el fichero si no se por donde lo paso
-    #en la interfaz o mejor con un arg en terminal
     INICIO=time.time()
     producer = Producer({"bootstrap.servers": f"{IP_K}:{PORT_K}"})
 
@@ -179,7 +176,14 @@ if len(sys.argv)==4:
             if tiempo <= 0:
                 print("Tiempo no válido")
                 continue
-            solicitarRiego(ws, tiempo)
+            ts=solicitarRiego(ws, tiempo)
+            
+            if ts is not None:
+                if  esperarResultado(ts) is None:
+                    print("Sin respuesta de Central")
+                    
+                #Dependiendo del riego seguiremos
+            
         elif opcion == "2":
             nombre = input("Nombre del fichero: ")
             #mirar si pongo caso de q se lea por argumento o no
@@ -189,7 +193,7 @@ if len(sys.argv)==4:
         else:
             print("Opción no válida")
             
-    consumer.close()
+    detener.set()#paro el hilo
     hilo_respuestas.join(timeout=3)
 
 else:
