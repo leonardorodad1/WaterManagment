@@ -157,8 +157,27 @@ def cargarEstaciones():
     conexion = sqlite3.connect(DB_PATH)
     cursor= conexion.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS estaciones (id_estacion TEXT PRIMARY KEY,ubicacion TEXT NOT NULL,estado TEXT NOT NULL)")
-    #las dejamos en desconectadas al iniciarlas
-    cursor.execute("UPDATE estaciones SET estado=:nuevoestado", {"nuevoestado" : "DISCONNECTED"})
+
+    #añadimos columnas para controlar caudal y volumen
+    
+    cursor.execute("PRAGMA table_info(estaciones)") #devuelve una fila por cada columna, la tupla tendrá nºcol nombre tipo ...
+    filas = cursor.fetchall()
+    columnas = []
+    for fila in filas:
+        columnas.append(fila[1]) #nos guardamos los nombres de los atributos que ya existen
+
+    # añadimos solo las que faltan
+    if "caudal" not in columnas:
+        cursor.execute("ALTER TABLE estaciones ADD COLUMN caudal REAL NOT NULL DEFAULT 0")
+    if "volumen" not in columnas:
+        cursor.execute("ALTER TABLE estaciones ADD COLUMN volumen REAL NOT NULL DEFAULT 0")
+    if "operador" not in columnas:
+        cursor.execute("ALTER TABLE estaciones ADD COLUMN operador TEXT")
+    
+    #esto se hace asi para no modificar el volume de railway ni perder datos
+    
+    #las dejamos en desconectadas al iniciarla
+    cursor.execute("UPDATE estaciones SET estado='DISCONNECTED', caudal=0, volumen=0, operador='-'")
     
     conexion.commit()
     
@@ -168,7 +187,7 @@ def cargarEstaciones():
 
     for estacion in listaestaciones:
         
-        print(f"Id: {estacion[0]} Ubicacion: {estacion[1]} Estado: {estacion[2]}")    
+        print(f"Id: {estacion[0]} Ubicacion: {estacion[1]} Estado: {estacion[2]} Caudal: {estacion[3]} L/min Volumen: {estacion[4]} L Operador: {estacion[5]}")    
 
 #Devolvemos el resultado de la peticion del FO dependiendo del estado de la estacion
 #Autorizada si estacion dispo
