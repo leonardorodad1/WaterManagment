@@ -44,6 +44,7 @@ def leerTeclado():
             estado="KO"
         print(f"Estado: {estado}")
 
+#MAIN
 if  (len(sys.argv) == 5):
     IP_K = sys.argv[1]
     PORT_K = int(sys.argv[2])
@@ -64,14 +65,20 @@ if  (len(sys.argv) == 5):
     
     
     print (f"Establecida conexión en [{ADDR}]")
-
-    #TODO permitir que en tiempo de ejecucion se pulse una tecla 
-    # para reportar el KO al monitor y q este envie el msg averia a central
     
+    
+    
+    #asigno id del monitor al engine
+    asignacion=receive(monitor)
+    partes=asignacion.split('#')
+    
+    if partes[0]=="ID":
+        ID_WS=partes[1]
+        print(f"Engine asignado a {ID_WS}")  
+        
     respuesta_teclado=threading.Thread(target=leerTeclado, daemon=True)
     #si el programa principal termina lo mato con daemon=true
     respuesta_teclado.start()
-    
     while True:
         try:
             msg=receive(monitor)
@@ -79,7 +86,7 @@ if  (len(sys.argv) == 5):
             msg=""
         if msg=="":
             print("El monitor ha cerrado conexión")
-            break
+            break               
         if msg=="CONEXION":
             send(monitor,estado)
     

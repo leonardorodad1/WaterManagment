@@ -130,6 +130,8 @@ if  (len(sys.argv) == 5):
     #esperamos a que se conecte un Engine, hasta que no haya engine no vigilamos nada
     conn_engine, addr_engine= servidor.accept()
     conn_engine.settimeout(1)
+    #enviamos id leida de terminal al engine para asignarsela
+    send(conn_engine, f"ID#{ID_WS}")
     print(f"Engine conectado desde {addr_engine}")
     
     #enviamos un mensaje cada sec para comprobar la salud
@@ -150,6 +152,7 @@ if  (len(sys.argv) == 5):
             try:
                 conn_engine, addr_engine = servidor.accept()
                 conn_engine.settimeout(1)
+                send(conn_engine, f"ID#{ID_WS}")#volver a enviar la id en caso de que se reconecte
                 print(f"Engine reconectado desde {addr_engine}")
             except (OSError, ValueError):
                 conn_engine=None
