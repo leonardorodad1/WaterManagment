@@ -74,7 +74,7 @@ def handle_client(conn, addr):
                         #lo meto a la base de datos
                         cursor.execute("INSERT INTO estaciones (id_estacion, ubicacion, estado) VALUES (?,?,'AVAILABLE')",(idestacion,ubicacion))
                         conexion.commit()
-                        ultimo_latido[id_ws]=time.time()
+                        ultimo_latido[idestacion]=time.time()
                         #TODO VER SI RENTA MAS USARLO CON UN DICCIONARIO Y ASI NO USAR ? ? ?            
                         conn.send(f"STATUS#OK#Estacion registrada correctamente".encode(FORMAT))
                     
