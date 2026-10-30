@@ -1,0 +1,22 @@
+
+services:
+
+  fo1:
+    build: ./WM_FO
+    image: wm_fo
+    container_name: fo1
+    command: ["${IP_KAFKA}", "${PUERTO_KAFKA}", "${OP1_ID}"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./WM_FO/servicios:/app/servicios
+
+  fo2:
+    build: ./WM_FO
+    image: wm_fo
+    container_name: fo2
+    command: ["${IP_KAFKA}", "${PUERTO_KAFKA}", "${OP2_ID}"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./WM_FO/servicios:/app/servicios

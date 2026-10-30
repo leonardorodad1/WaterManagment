@@ -1,0 +1,40 @@
+
+services:
+
+  ws1-monitor:
+    build: ./WM_WS/WM_M
+    image: wm_ws_m
+    container_name: ws1-monitor
+    command: ["6001", "${IP_CENTRAL}", "${PUERTO_CENTRAL}", "${WS1_ID}"]
+    stdin_open: true
+    tty: true
+    restart: on-failure
+
+  ws1-engine:
+    build: ./WM_WS/WM_E
+    image: wm_ws_e
+    container_name: ws1-engine
+    command: ["${IP_KAFKA}", "${PUERTO_KAFKA}", "ws1-monitor", "6001"]
+    stdin_open: true
+    tty: true
+    depends_on: [ws1-monitor]
+    restart: on-failure
+
+  ws2-monitor:
+    build: ./WM_WS/WM_M
+    image: wm_ws_m
+    container_name: ws2-monitor
+    command: ["6001", "${IP_CENTRAL}", "${PUERTO_CENTRAL}", "${WS2_ID}"]
+    stdin_open: true
+    tty: true
+    restart: on-failure
+
+  ws2-engine:
+    build: ./WM_WS/WM_E
+    image: wm_ws_e
+    container_name: ws2-engine
+    command: ["${IP_KAFKA}", "${PUERTO_KAFKA}", "ws2-monitor", "6001"]
+    stdin_open: true
+    tty: true
+    depends_on: [ws2-monitor]
+    restart: on-failure

@@ -97,7 +97,7 @@ def publicar(dato):
         print("Kafka: buffer lleno, no se ha podido enviar")
  
 def enviarCaudal(caudal,volumen,operador,ts):
-    print(f"Caudal: {caudal} L/min Volumen acumulado: {volumen} L")
+    print(f"Caudal: {caudal} L/min Volumen acumulado: {round(volumen,3)} L")
     publicar({"ws":ID_WS,"tipo":"CAUDAL","caudal":caudal,"volumen":round(volumen,2),"operador":operador,"ts_peticion":ts})
 
 def enviarFinRiego(resumen,operador,ts):
