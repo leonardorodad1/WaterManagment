@@ -9,7 +9,7 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./WM_FO/servicios:/app/servicios
+      - ./WM_FO/servicios.txt:/app/servicios.txt
 
   fo2:
     build: ./WM_FO

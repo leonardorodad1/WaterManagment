@@ -16,6 +16,8 @@ TOPIC_ORDENES="wm.ordenes"
 TOPIC_CAUDAL="wm.caudal"
 ESPERA_REINTENTO_KAFKA = 5 #segundos que espera si falla la conexion con kafka antes de reintentar
 DB_PATH = os.environ.get("WM_DB_PATH", "watermanagment.db")  # Ruta de la base de datos, se puede configurar mediante variable de entorno
+TIEMPO_SIN_LATIDO = 6 #si una WS pasa 6 s sin mandar LATIDO la marcamos DISCONNECTED
+ultimo_latido = {}
 
 def handle_client(conn, addr):
     
@@ -72,6 +74,7 @@ def handle_client(conn, addr):
                         #lo meto a la base de datos
                         cursor.execute("INSERT INTO estaciones (id_estacion, ubicacion, estado) VALUES (?,?,'AVAILABLE')",(idestacion,ubicacion))
                         conexion.commit()
+                        ultimo_latido[id_ws]=time.time()
                         #TODO VER SI RENTA MAS USARLO CON UN DICCIONARIO Y ASI NO USAR ? ? ?            
                         conn.send(f"STATUS#OK#Estacion registrada correctamente".encode(FORMAT))
                     
@@ -97,6 +100,7 @@ def handle_client(conn, addr):
                 #en caso de que exista, acutalizamos estaddo
                 cursor.execute("UPDATE estaciones SET estado='AVAILABLE' where id_estacion=:idbuscado", {"idbuscado" : id_ws})
                 conexion.commit()
+                ultimo_latido[id_ws]=time.time()
                 conn.send(f"STATUS#OK#Autenticada en {ubicacion}".encode(FORMAT))
             else:
                 conn.send("STATUS#ERROR#Estacion no registrada".encode(FORMAT))
@@ -121,6 +125,20 @@ def handle_client(conn, addr):
             cursor.close()
             conn.send(f"STATUS#OK#Estado de {id_ws} cambia a {estado_ws}".encode(FORMAT))
             conexion.close()
+        elif partes[0]=="LATIDO" and len(partes)==2:
+            id_ws=partes[1]
+            ultimo_latido[id_ws]=time.time()
+            
+            conexion=sqlite3.connect(DB_PATH)
+            cursor=conexion.cursor()
+            cursor.execute("SELECT estado FROM estaciones where id_estacion=:idbuscado", {"idbuscado": id_ws})
+            fila=cursor.fetchone()
+            conexion.close()
+            #si la teniamos como desconectada se lo decimos para que vuelva a autenticarse
+            if fila is not None and fila[0]=="DISCONNECTED":
+                conn.send("STATUS#ERROR#DISCONNECTED".encode(FORMAT))
+            else:
+                conn.send("STATUS#OK#Latido recibido".encode(FORMAT))
         else:
             print("Error intentando leer el mensaje")
             conn.send("El mensaje pasado no es correcto, formato registro: 'REGISTRO#ID_ESTACION#UBICACION', formato autenticar: 'AUT#ID_ESTACION'".encode(FORMAT))
@@ -369,8 +387,23 @@ def escucharCaudal():
                 except Exception:
                     pass
         time.sleep(ESPERA_REINTENTO_KAFKA)    
+
         
-        
+def escucharLatidos():
+    while True:
+        ahora=time.time()
+        for id_ws in list(ultimo_latido.keys()):
+            if ahora-ultimo_latido[id_ws] > TIEMPO_SIN_LATIDO:
+                conexion=sqlite3.connect(DB_PATH)
+                cursor=conexion.cursor()
+                cursor.execute("UPDATE estaciones SET estado='DISCONNECTED' WHERE id_estacion=:idbuscado", {"idbuscado": id_ws})
+                conexion.commit()
+                conexion.close()
+                del ultimo_latido[id_ws] #ya esta marcada, dejamos de vigilarla hasta que vuelva
+                print(f"Estación {id_ws} sin latido desde hace {TIEMPO_SIN_LATIDO} s -> DISCONNECTED")
+        time.sleep(1)
+
+
 ######################### MAIN ##########################
 
 #Encargada de recibir pediciones y gestionar las conexiones con los clientes
@@ -401,7 +434,10 @@ if len(sys.argv)== 4:
     
     hilo_caudal = threading.Thread(target=escucharCaudal, daemon=True)
     hilo_caudal.start()
-    
+
+    hilo_latidos = threading.Thread(target=escucharLatidos, daemon=True)
+    hilo_latidos.start()
+
     start()
 else:
     print("Argumentos incorrectos. Prueba: python3 WM_CENTRAL.py <Puerto> <Ip_Kafka> <Puerto_Kafka>")

@@ -143,6 +143,9 @@ if  (len(sys.argv) == 5):
     #si el engine cae, seguiremos vigilando, aceptaremos luego su vuelta sin
     #reiniciar el mnitor
     servidor.settimeout(1)
+
+    INTERVALO_LATIDO = 2 #cada 2 s avisamos a la central de que seguimos vivos
+    ultimo_envio_latido = 0 
     
     while True:
         #si no hay engine conectado probamos a aceptar uno nuevo
@@ -183,7 +186,16 @@ if  (len(sys.argv) == 5):
         print(f"Engine responde: {salud}")
         #si se recibe KO enviamos mensaje de averia 
         estado_real = "OK" if salud == "OK" else "KO"
-
+        if not central_caida and time.time()-ultimo_envio_latido >= INTERVALO_LATIDO:
+            ultimo_envio_latido = time.time()
+            resp = enviar_a_central(ADDR, f"LATIDO#{ID_WS}")
+            if resp is None:
+                central_caida = True
+                print("Imposible conectar con WM_Central. Reintentando...")
+            elif resp == "STATUS#ERROR#DISCONNECTED":
+                print("La Central nos tenía como desconectados. Volvemos a autenticarnos")
+                central_caida = True
+            
         # Si la central estaba caída, intentamos reautenticarnos
         if central_caida:
             resp = enviar_a_central(ADDR, f"AUT#{ID_WS}")
