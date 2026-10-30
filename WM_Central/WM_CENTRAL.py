@@ -12,6 +12,8 @@ HEADER = 64
 FORMAT = 'utf-8'
 TOPIC_PETICIONES = "wm.peticiones"
 TOPIC_RESPUESTAS = "wm.respuestas"
+TOPIC_ORDENES="wm.ordenes"
+TOPIC_CAUDAL="wm.caudal"
 ESPERA_REINTENTO_KAFKA = 5 #segundos que espera si falla la conexion con kafka antes de reintentar
 DB_PATH = os.environ.get("WM_DB_PATH", "watermanagment.db")  # Ruta de la base de datos, se puede configurar mediante variable de entorno
 
@@ -196,6 +198,13 @@ def evaluarPeticion(peticion):
     conexion = sqlite3.connect(DB_PATH)
     try:
         cursor = conexion.cursor()
+        #intentamos reservar la estacion: solo cambia si esta AVAILABLE en este mismo instante
+        cursor.execute("UPDATE estaciones SET estado='WATERING', operador=:op, caudal=0, volumen=0 WHERE id_estacion=:idbuscado AND estado='AVAILABLE'",{"op": peticion["operador"], "idbuscado": peticion["ws"]})
+        conexion.commit()
+        
+        if cursor.rowcount == 1:
+            return "AUTORIZADA", "estacion disponible"
+        #si no se ha podido reservar miramos el porque
         cursor.execute("SELECT estado FROM estaciones where id_estacion=:idbuscado", {"idbuscado": peticion["ws"]})
         fila=cursor.fetchone()
     finally:
@@ -203,9 +212,7 @@ def evaluarPeticion(peticion):
     
     if fila is None:
         return "DENEGADA", "estación no registrada"
-    if fila[0] != "AVAILABLE":
-        return "DENEGADA", f"estación en estado {fila[0]}"
-    return "AUTORIZADA", "estacion disponible"
+    return "DENEGADA", f"estación en estado {fila[0]}"
 
 #dejamos en el wm.respuesta un mensajae para el FO que hizo la peticion
 def responderPeticion(producer,peticion,res,motivo):
@@ -224,7 +231,8 @@ def procesarPeticion(consumer, producer, msg):
         operador = peticion["operador"]
         ws=peticion["ws"]
         peticion["ts"]#comprobamos que existe
-    except (json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError, AttributeError):
+        tiempo=int(peticion["tiempo"])
+    except (json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError, AttributeError,ValueError):
         #mensaje mal formado: lo descartamos y lo damos por leido para no atascarnos con el
         print("Formato de peticion incorrecto, se descarta")
         consumer.commit(message=msg, asynchronous=False)
@@ -237,6 +245,10 @@ def procesarPeticion(consumer, producer, msg):
     print(f"Peticion de {operador} para {ws} -> {resultado}, {motivo}")        
     responderPeticion(producer,peticion, resultado,motivo)
     
+    if resultado=="AUTORIZADA":
+        orden={"ws": ws, "orden": "START", "tiempo": tiempo, "operador": operador,
+               "ts": time.time(), "ts_peticion": peticion["ts"]}
+        producer.produce(TOPIC_ORDENES, key=ws, value=json.dumps(orden))
     #enviamos las respuestas
     pendientes = producer.flush(10)
     if pendientes == 0:
@@ -244,7 +256,46 @@ def procesarPeticion(consumer, producer, msg):
         consumer.commit(message=msg, asynchronous=False)
     else:
         print("No se ha podido responder al operador (Kafka no disponible)")
-#
+
+def procesarCaudal(consumer, producer,msg):
+    try:
+        dato=json.loads(msg.value().decode(FORMAT))
+        ws=dato["ws"]
+        tipo=dato["tipo"]
+        operador=dato["operador"]
+        ts=dato["ts_peticion"]
+    except (json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError, AttributeError):
+        print("Mensaje de caudal incorrecto, se descarta")
+        consumer.commit(message=msg, asynchronous=False)
+        return
+    
+    peticion={"operador": operador, "ws":ws,"ts":ts} #para respomder al fo que lo ha pedido
+    conexion=sqlite3.connect(DB_PATH)
+    try:
+        cursor=conexion.cursor()
+        
+        if tipo=="CAUDAL":
+            #solo guardamos si la estación sigue en watering
+            
+                cursor.execute("UPDATE estaciones SET caudal=:c,volumen=:v WHERE id_estacion=:ws AND estado='WATERING'", {"c":dato['caudal'], "v":dato['volumen'],"ws":ws})
+                conexion.commit()
+                if cursor.rowcount==1:
+                    print(f"{ws} regando: {dato['caudal']} L/m, {dato['volumen']}")
+                    responderPeticion(producer, peticion, "REGANDO", f"Caudal {dato['caudal']} L/min, volumen {dato['volumen']} L")
+                
+        elif tipo=="FIN":
+            if dato["motivo"]!="FUGA":
+                cursor.execute("UPDATE estaciones SET estado='AVAILABLE' WHERE id_estacion=:ws AND estado='WATERING'", {"ws":ws})
+            cursor.execute("UPDATE estaciones SET caudal=0, volumen=0, operador='-' WHERE id_estacion=:ws", {"ws": ws})
+            conexion.commit()
+            resumen=f"Fin por {dato['motivo']}. Duración {dato['duracion']} s. Volumen total {dato['volumen']} L"
+            responderPeticion(producer, peticion, "FINALIZADO", resumen)
+    finally:
+        conexion.close()
+    
+    if producer.flush(10)==0:
+        consumer.commit(message=msg,asynchronous=False)
+            
 def escucharPeticiones():
     while True:
         consumer = None
@@ -281,6 +332,45 @@ def escucharPeticiones():
                 except Exception:
                     pass
         time.sleep(ESPERA_REINTENTO_KAFKA)
+        
+def escucharCaudal():
+    while True:
+        consumer = None
+        try:
+            consumer= Consumer({
+                "bootstrap.servers":f"{IP_KAFKA}:{PORT_KAFKA}",
+                "group.id":"wm-central-caudal",
+                "auto.offset.reset":"earliest",
+                "enable.auto.commit": False
+            })
+            producer=Producer({"bootstrap.servers":f"{IP_KAFKA}:{PORT_KAFKA}"})
+            consumer.subscribe([TOPIC_CAUDAL])
+            print(f"Escuchando el topic {TOPIC_CAUDAL}...")
+            
+            while True:
+                msg=consumer.poll(1.0)
+                
+                if msg is None:
+                    continue
+                
+                if msg.error():
+                    if msg.error().code() not in (KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError._PARTITION_EOF):
+                        print(f"[KAFKA] {msg.error()}")
+                    continue
+                
+                procesarCaudal(consumer, producer, msg)
+                
+        except Exception as e:
+            print(f"[KAFKA] Error en el hilo de caudal: {e}. Reintentando en {ESPERA_REINTENTO_KAFKA} s")
+        finally:
+            if consumer is not None:
+                try:
+                    consumer.close()
+                except Exception:
+                    pass
+        time.sleep(ESPERA_REINTENTO_KAFKA)    
+        
+        
 ######################### MAIN ##########################
 
 #Encargada de recibir pediciones y gestionar las conexiones con los clientes
@@ -308,6 +398,10 @@ if len(sys.argv)== 4:
     #HILO POR CADA PETICION
     hilo_kafka = threading.Thread(target=escucharPeticiones, daemon=True)
     hilo_kafka.start()
+    
+    hilo_caudal = threading.Thread(target=escucharCaudal, daemon=True)
+    hilo_caudal.start()
+    
     start()
 else:
     print("Argumentos incorrectos. Prueba: python3 WM_CENTRAL.py <Puerto> <Ip_Kafka> <Puerto_Kafka>")

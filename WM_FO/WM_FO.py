@@ -75,15 +75,40 @@ def solicitarRiego(ws, tiempo):
 def esperarResultado(ts):
     limite=time.time()+TIMEOUT_RESPUESTA
     with condicion:
-        while resultados.get(ts) not in RESULTADOS_FINALES:
+        while True:
+            estados=resultados.get(ts, set())
+            for final in RESULTADOS_FINALES:
+                if final in estados:
+                    return final
             restante=limite-time.time()
             if restante<=0:
                 return None
             condicion.wait(restante)
-        return resultados[ts]
- 
 
+#Espera a que la estacion termine el riego
 
+def esperarFin(ts,tiempo):
+    limite=time.time()+tiempo+TIMEOUT_RESPUESTA
+    with condicion:
+        while "FINALIZADO" not in resultados.get(ts,set()):
+            restante=limite-time.time()
+            if restante<=0:
+                return False
+            condicion.wait(restante)
+        return True
+
+#pide un riego y espera hasta su conclusion, denegado o riego terminado
+def solicitarEsperar(ws, tiempo):
+    ts=solicitarRiego(ws,tiempo)
+    if ts is None:
+        return
+    resultado=esperarResultado(ts)
+    if resultado is None:
+        print("Sin respuesta de WM_Central.")
+    elif resultado=="AUTORIZADA":
+        if not esperarFin(ts, tiempo):
+            print("El riego no ha informado de su finalizacion.")
+            
 #leer un fichero todos los servicios que va a solicitar
 #cada linea tendrá un servicio, formato ID-WS#TIEMPO
 def leerFichero(nombre):
@@ -116,13 +141,7 @@ def leerFichero(nombre):
             continue # nos la saltamos si da error
         #solicitamos servicio 
         print(f"Servicio del fichero: {ws} durante {tiempo} segundos")
-        ts=solicitarRiego(ws,tiempo)
-        
-        #esperamos antes de leer la siguiente linea y pedir el sefivico
-        if ts is not None:
-            print("Esperando a terminar la peticion...")
-            if esperarResultado(ts) is None:
-                print("Sin respuesta de WM_Central (puede estar caida). Paso al siguiente servicio.")
+        solicitarEsperar(ws,tiempo)
         
         #esperamos antes de pedir el siguiente servicio
         time.sleep(ESPERA_RESPUESTA)
@@ -176,13 +195,7 @@ if len(sys.argv)==4 or len(sys.argv)==5:
             if tiempo <= 0:
                 print("Tiempo no válido")
                 continue
-            ts=solicitarRiego(ws, tiempo)
-            
-            if ts is not None:
-                if  esperarResultado(ts) is None:
-                    print("Sin respuesta de Central")
-                    
-                #Dependiendo del riego seguiremos
+            solicitarEsperar(ws, tiempo)
             
         elif opcion == "2":
             nombre = input("Nombre del fichero: ")
