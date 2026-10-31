@@ -6,6 +6,9 @@ import sqlite3
 import time
 from confluent_kafka import Consumer,Producer, KafkaError
 import json
+from urllib.parse import urlparse, parse_qs
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 #Const de configuración
 HEADER = 64
@@ -18,6 +21,10 @@ ESPERA_REINTENTO_KAFKA = 5 #segundos que espera si falla la conexion con kafka a
 DB_PATH = os.environ.get("WM_DB_PATH", "watermanagment.db")  # Ruta de la base de datos, se puede configurar mediante variable de entorno
 TIEMPO_SIN_LATIDO = 6 #si una WS pasa 6 s sin mandar LATIDO la marcamos DISCONNECTED
 ultimo_latido = {}
+MAX_MENSAJES = 50 
+mensajes_panel = [] 
+ZONA_HORARIA = ZoneInfo("Europe/Madrid") 
+kafka_ok = False #true si el broker responde
 
 def handle_client(conn, addr):
     
@@ -75,6 +82,7 @@ def handle_client(conn, addr):
                         cursor.execute("INSERT INTO estaciones (id_estacion, ubicacion, estado) VALUES (?,?,'AVAILABLE')",(idestacion,ubicacion))
                         conexion.commit()
                         ultimo_latido[idestacion]=time.time()
+                        registrarMensaje(f"{idestacion} - registrada en {ubicacion}")
                         #TODO VER SI RENTA MAS USARLO CON UN DICCIONARIO Y ASI NO USAR ? ? ?            
                         conn.send(f"STATUS#OK#Estacion registrada correctamente".encode(FORMAT))
                     
@@ -98,9 +106,10 @@ def handle_client(conn, addr):
                     break
             if existe:
                 #en caso de que exista, acutalizamos estaddo
-                cursor.execute("UPDATE estaciones SET estado='AVAILABLE' where id_estacion=:idbuscado", {"idbuscado" : id_ws})
+                cursor.execute("UPDATE estaciones SET estado='AVAILABLE' where id_estacion=:idbuscado AND estado!='OUT_OF_SERVICE'", {"idbuscado" : id_ws})
                 conexion.commit()
                 ultimo_latido[id_ws]=time.time()
+                registrarMensaje(f"{id_ws} - autenticada en {ubicacion}")
                 conn.send(f"STATUS#OK#Autenticada en {ubicacion}".encode(FORMAT))
             else:
                 conn.send("STATUS#ERROR#Estacion no registrada".encode(FORMAT))
@@ -117,10 +126,11 @@ def handle_client(conn, addr):
             if estado_ws=="LEAK":
                 
                 cursor.execute("UPDATE estaciones set estado='LEAK' where id_estacion=:idbuscado",{"idbuscado": id_ws})
-                print(f"Estación {id_ws} cambia su estado a LEAK, fuga detectada")
+                registrarMensaje(f"{id_ws} - fuga detectada, estado LEAK")
             elif estado_ws=="AVAILABLE":
-                cursor.execute("UPDATE estaciones set estado='AVAILABLE' where id_estacion=:idbuscado",{"idbuscado": id_ws})
-                print(f"Estación {id_ws} cambia su estado a AVAILABLE, fuga resuelta")
+                cursor.execute("UPDATE estaciones set estado='AVAILABLE' where id_estacion=:idbuscado AND estado='LEAK'",{"idbuscado": id_ws})
+                if cursor.rowcount==1:
+                    registrarMensaje(f"{id_ws} - fuga resuelta, estado AVAILABLE")
             conexion.commit()
             cursor.close()
             conn.send(f"STATUS#OK#Estado de {id_ws} cambia a {estado_ws}".encode(FORMAT))
@@ -193,8 +203,16 @@ def cargarEstaciones():
         cursor.execute("ALTER TABLE estaciones ADD COLUMN volumen REAL NOT NULL DEFAULT 0")
     if "operador" not in columnas:
         cursor.execute("ALTER TABLE estaciones ADD COLUMN operador TEXT")
-    
     #esto se hace asi para no modificar el volume de railway ni perder datos
+    if "ultimo_fin" not in columnas:
+        cursor.execute("ALTER TABLE estaciones ADD COLUMN ultimo_fin REAL") 
+    if "ultimo_operador" not in columnas:
+        cursor.execute("ALTER TABLE estaciones ADD COLUMN ultimo_operador TEXT")
+    if "ultimo_volumen" not in columnas:
+        cursor.execute("ALTER TABLE estaciones ADD COLUMN ultimo_volumen REAL")
+    if "ultimo_motivo" not in columnas:
+        cursor.execute("ALTER TABLE estaciones ADD COLUMN ultimo_motivo TEXT")
+    
     
     #las dejamos en desconectadas al iniciarla
     cursor.execute("UPDATE estaciones SET estado='DISCONNECTED', caudal=0, volumen=0, operador='-'")
@@ -260,7 +278,7 @@ def procesarPeticion(consumer, producer, msg):
     responderPeticion(producer,peticion,"RECIBIDA","Peticion recibida, comprobando estado")
  
     resultado,motivo=evaluarPeticion(peticion)
-    print(f"Peticion de {operador} para {ws} -> {resultado}, {motivo}")        
+    registrarMensaje(f"{operador} - petición de riego en {ws} -> {resultado}, {motivo}")        
     responderPeticion(producer,peticion, resultado,motivo)
     
     if resultado=="AUTORIZADA":
@@ -305,8 +323,10 @@ def procesarCaudal(consumer, producer,msg):
             if dato["motivo"]!="FUGA":
                 cursor.execute("UPDATE estaciones SET estado='AVAILABLE' WHERE id_estacion=:ws AND estado='WATERING'", {"ws":ws})
             cursor.execute("UPDATE estaciones SET caudal=0, volumen=0, operador='-' WHERE id_estacion=:ws", {"ws": ws})
+            cursor.execute("UPDATE estaciones SET ultimo_fin=:fin, ultimo_operador=:op, ultimo_volumen=:v, ultimo_motivo=:m WHERE id_estacion=:ws",{"fin": time.time(), "op": operador, "v": dato["volumen"], "m": dato["motivo"], "ws": ws})
             conexion.commit()
             resumen=f"Fin por {dato['motivo']}. Duración {dato['duracion']} s. Volumen total {dato['volumen']} L"
+            registrarMensaje(f"{ws} - {resumen}")
             responderPeticion(producer, peticion, "FINALIZADO", resumen)
     finally:
         conexion.close()
@@ -400,15 +420,184 @@ def escucharLatidos():
                 conexion.commit()
                 conexion.close()
                 del ultimo_latido[id_ws] #ya esta marcada, dejamos de vigilarla hasta que vuelva
-                print(f"Estación {id_ws} sin latido desde hace {TIEMPO_SIN_LATIDO} s -> DISCONNECTED")
+                registrarMensaje(f"{id_ws} - sin latido desde hace {TIEMPO_SIN_LATIDO} s, DISCONNECTED")
         time.sleep(1)
 
+
+
+def registrarMensaje(texto):
+    linea=datetime.now(ZONA_HORARIA).strftime("[%H:%M:%S] ")+texto
+    print(linea)
+    mensajes_panel.append(linea)
+    if len(mensajes_panel) > MAX_MENSAJES:
+        mensajes_panel.pop(0)
+
+def generarEstadoJSON():
+    conexion=sqlite3.connect(DB_PATH)
+    cursor=conexion.cursor()
+    cursor.execute("SELECT id_estacion, ubicacion, estado, caudal, volumen, operador, ultimo_fin, ultimo_operador, ultimo_volumen, ultimo_motivo FROM estaciones")    
+    filas=cursor.fetchall()
+    conexion.close()
+
+    estaciones=[]
+    for fila in filas:
+        estaciones.append({
+            "id": fila[0],
+            "ubicacion": fila[1],
+            "estado": fila[2],
+            "caudal": fila[3],
+            "volumen": fila[4],
+            "operador": fila[5],
+            "ultimo_fin": fila[6],  
+            "ultimo_operador": fila[7],
+            "ultimo_volumen": fila[8],
+            "ultimo_motivo": fila[9],
+        })
+    datos={
+        "estaciones": estaciones,
+        "mensajes": mensajes_panel,
+        "ahora": time.time(), 
+        "kafka": f"{IP_KAFKA}:{PORT_KAFKA}",
+        "kafka_ok": kafka_ok,
+        "hora": datetime.now(ZONA_HORARIA).strftime("%d/%m/%Y %H:%M:%S"),
+    }
+    return json.dumps(datos)
+
+
+def vigilarKafka():
+    global kafka_ok
+    while True:
+        try:
+            producer_web.list_topics(timeout=3)
+            if not kafka_ok:
+                registrarMensaje("CENTRAL - conectada con Kafka")
+            kafka_ok=True
+        except Exception:
+            if kafka_ok:
+                registrarMensaje("CENTRAL - se ha perdido la conexion con Kafka")
+            kafka_ok=False
+        time.sleep(5)
+
+def ejecutarOrdenCentral(accion, ws, tiempo):
+    conexion=sqlite3.connect(DB_PATH)
+    cursor=conexion.cursor()
+    if ws=="ALL":
+        cursor.execute("SELECT id_estacion FROM estaciones")
+        lista=[]
+        for fila in cursor.fetchall():
+            lista.append(fila[0])
+    else:
+        lista=[ws]
+    conexion.close()
+    for id_ws in lista:
+        if accion=="START":
+            peticion={"operador": "CENTRAL", "ws": id_ws, "tiempo": tiempo, "ts": time.time()}
+            resultado,motivo=evaluarPeticion(peticion)
+            registrarMensaje(f"CENTRAL - inicio de riego en {id_ws} -> {resultado}, {motivo}")
+            if resultado=="AUTORIZADA":
+                orden={"ws": id_ws, "orden": "START", "tiempo": tiempo, "operador": "CENTRAL",
+                       "ts": time.time(), "ts_peticion": peticion["ts"]}
+                producer_web.produce(TOPIC_ORDENES, key=id_ws, value=json.dumps(orden))
+
+        elif accion=="BLOCK":
+            conexion=sqlite3.connect(DB_PATH)
+            cursor=conexion.cursor()
+            cursor.execute("SELECT estado FROM estaciones WHERE id_estacion=:idbuscado", {"idbuscado": id_ws})
+            fila=cursor.fetchone()
+            if fila is None or fila[0]=="DISCONNECTED":
+                registrarMensaje(f"CENTRAL - no se puede bloquear {id_ws}: no esta conectada")
+            else:
+                cursor.execute("UPDATE estaciones SET estado='OUT_OF_SERVICE' WHERE id_estacion=:idbuscado", {"idbuscado": id_ws})
+                conexion.commit()
+                registrarMensaje(f"CENTRAL - {id_ws} bloqueada, estado OUT_OF_SERVICE")
+                if fila[0]=="WATERING":
+                    orden={"ws": id_ws, "orden": "STOP", "ts": time.time()}
+                    producer_web.produce(TOPIC_ORDENES, key=id_ws, value=json.dumps(orden))
+            conexion.close()
+
+        elif accion=="ACTIVATE":
+            conexion=sqlite3.connect(DB_PATH)
+            cursor=conexion.cursor()
+            cursor.execute("UPDATE estaciones SET estado='AVAILABLE' WHERE id_estacion=:idbuscado AND estado='OUT_OF_SERVICE'", {"idbuscado": id_ws})
+            conexion.commit()
+            if cursor.rowcount==1:
+                registrarMensaje(f"CENTRAL - {id_ws} activada, estado AVAILABLE")
+            else:
+                registrarMensaje(f"CENTRAL - {id_ws} no estaba fuera de servicio, no se activa")
+            conexion.close()
+
+    if producer_web.flush(5)!=0:
+        return "Kafka no disponible: la orden no ha llegado a las estaciones"
+    return f"Orden {accion} ejecutada para {ws}"
+
+def responderHTTP(conn, tipo, cuerpo):
+    cuerpo=cuerpo.encode(FORMAT)
+    cabecera=f"HTTP/1.1 200 OK\r\nContent-Type: {tipo}; charset=utf-8\r\n"
+    cabecera+=f"Content-Length: {len(cuerpo)}\r\nConnection: close\r\n\r\n"
+    conn.sendall(cabecera.encode(FORMAT)+cuerpo)
+
+
+def atenderNavegador(conn):
+    try:
+        peticion=conn.recv(2048).decode(FORMAT)
+        primera_linea=peticion.split("\r\n")[0]
+        partes=primera_linea.split(" ")
+        if len(partes) < 2:
+            return
+        url=urlparse(partes[1])
+        ruta=url.path
+        if ruta=="/":
+            fichero=open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.html"), encoding=FORMAT)
+            html=fichero.read()
+            fichero.close()
+            responderHTTP(conn, "text/html", html)
+        elif ruta=="/panel.js":
+            fichero=open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.js"), encoding=FORMAT)
+            js=fichero.read()
+            fichero.close()
+            responderHTTP(conn, "application/javascript", js)
+        elif ruta=="/panel.css":
+            fichero=open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.css"), encoding=FORMAT)
+            css=fichero.read()
+            fichero.close()
+            responderHTTP(conn, "text/css", css)
+        elif ruta=="/estado":
+            responderHTTP(conn, "application/json", generarEstadoJSON())
+        elif ruta=="/orden":
+            parametros=parse_qs(url.query) 
+            accion=parametros.get("accion", [""])[0]
+            ws=parametros.get("ws", [""])[0]
+            tiempo=parametros.get("tiempo", [""])[0]
+            if accion not in ("START", "BLOCK", "ACTIVATE") or ws=="":
+                responderHTTP(conn, "text/plain", "Orden no valida")
+            elif accion=="START" and not (tiempo.isdigit() and int(tiempo)>0):
+                responderHTTP(conn, "text/plain", "Tiempo de riego no valido")
+            else:
+                texto=ejecutarOrdenCentral(accion, ws, int(tiempo) if tiempo.isdigit() else 0)
+                responderHTTP(conn, "text/plain", texto)
+        else:
+            responderHTTP(conn, "text/plain", "Ruta no encontrada")
+    except (OSError, sqlite3.Error) as e:
+        print(f"[WEB] Error atendiendo al navegador: {e}")
+    finally:
+        conn.close()
+
+def servidorWeb(puerto):
+    servidor_web=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    servidor_web.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    servidor_web.bind(("0.0.0.0", puerto))
+    servidor_web.listen()
+    print(f"[WEB] Panel disponible en el puerto {puerto}")
+    while True:
+        conn, addr=servidor_web.accept()
+        hilo=threading.Thread(target=atenderNavegador, args=(conn,), daemon=True)
+        hilo.start()
 
 ######################### MAIN ##########################
 
 #Encargada de recibir pediciones y gestionar las conexiones con los clientes
 
-if len(sys.argv)== 4:
+if len(sys.argv)== 5:
     
     #puerto de escucha que ofrece al ws_wm_m
     PORT= int(sys.argv[1])
@@ -418,6 +607,8 @@ if len(sys.argv)== 4:
     
     IP_KAFKA=sys.argv[2]
     PORT_KAFKA=int(sys.argv[3])
+    PUERTO_WEB=int(sys.argv[4])
+    producer_web=Producer({"bootstrap.servers": f"{IP_KAFKA}:{PORT_KAFKA}"})
     
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) #reinicia central sin esperar a que el sistema libere el puerto
@@ -438,6 +629,12 @@ if len(sys.argv)== 4:
     hilo_latidos = threading.Thread(target=escucharLatidos, daemon=True)
     hilo_latidos.start()
 
+    hilo_web = threading.Thread(target=servidorWeb, args=(PUERTO_WEB,), daemon=True)
+    hilo_web.start()
+
+    hilo_kafka_estado = threading.Thread(target=vigilarKafka, daemon=True)
+    hilo_kafka_estado.start()
+
     start()
 else:
-    print("Argumentos incorrectos. Prueba: python3 WM_CENTRAL.py <Puerto> <Ip_Kafka> <Puerto_Kafka>")
+    print("Argumentos incorrectos. Prueba: python3 WM_CENTRAL.py <Puerto> <Ip_Kafka> <Puerto_Kafka> <Puerto_Web>")

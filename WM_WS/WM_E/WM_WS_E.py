@@ -22,6 +22,7 @@ valvula="CERRADA" #electrovalvula: "CERRADA" O "ABIERTA"
 regando=False #si hay riego activo se pone a true
 
 pararRiego=threading.Event() #encargado de parar riego
+motivo_parada="PARADAMANUAL" #por que se ha parado el riego: PARADAMANUAL (tecla f) o BLOQUEO (orden STOP de la central)
 
 TOPIC_ORDENES="wm.ordenes" #central deja ordenes en este topic
 TOPIC_CAUDAL="wm.caudal"
@@ -118,9 +119,10 @@ def enviarFinRiego(resumen,operador,ts):
 
 def regar(tiempo,operador,ts):
     
-    global regando,valvula
+    global regando,valvula,motivo_parada
     
     pararRiego.clear() #quitamos peticion anterior    
+    motivo_parada="PARADAMANUAL"
     volumen=0.0
     inicio=time.time()
     motivo="TIEMPO" #si riega los x segundos, 
@@ -143,7 +145,7 @@ def regar(tiempo,operador,ts):
             if estado=="KO":
                 motivo="FUGA"
             else:
-                motivo="PARADAMANUAL"#operador ha pulsado f en el menu
+                motivo=motivo_parada #PARADAMANUAL si se pulso f, BLOQUEO si lo ordeno la central
             break
     valvula="CERRADA"
     print("Electroválvula cerrada")
@@ -171,7 +173,7 @@ def iniciarRiego(tiempo,operador, ts):
 # de la estacion asignada
 
 def escucharOrdenes(consumer):
-    
+    global motivo_parada
     while True:
         try:
             msg=consumer.poll(1.0)
@@ -196,6 +198,12 @@ def escucharOrdenes(consumer):
             #iniciar riego
             if orden["orden"]=="START":
                 iniciarRiego(int(orden["tiempo"]),orden["operador"],orden["ts_peticion"])
+            #la central ha bloqueado la estacion y cortamos el riego si lo hay
+            elif orden["orden"]=="STOP":
+                if regando:
+                    print("La Central ha bloqueado la estación. Finalizando el riego...")
+                    motivo_parada="BLOQUEO"
+                    pararRiego.set()
         except(json.JSONDecodeError, KeyError, TypeError, ValueError):
             continue#ignoramos mensaje no valido
                             

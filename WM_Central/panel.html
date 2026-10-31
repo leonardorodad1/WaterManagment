@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WaterManagement — Central</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <!--header-->
+    <header class="cabecera">
+      <div class="marca">
+        <div>
+          <h1>WaterManagement</h1>
+          <p>Central irrigation control</p>
+        </div>
+      </div>
+      <div class="conexion">
+        <span class="vivo" id="vivo">
+          <span class="luz"></span>
+          <span id="estado_central">Connecting to WM_Central</span>
+        </span>
+        <span class="vivo caida" id="vivo_kafka">
+          <span class="luz"></span>
+          <span id="estado_kafka">Kafka</span>
+        </span>
+        <span class="numero" id="hora"></span>
+      </div>
+    </header>
+
+    <!-- colores -->
+    <section class="estados" id="resumen" aria-label="Stations by status"></section>
+
+    <!-- menu -->
+    <section class="panel mando" aria-label="Central commands">
+      <h2>
+        Central commands
+        <small>Send an order to one station or to all of them at once</small>
+      </h2>
+      <div class="mando-cuerpo">
+        <div class="campo">
+          <label for="ws_elegida">Station</label>
+          <select id="ws_elegida" onchange="actualizarBotones()">
+            <option value="ALL">All stations</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="tiempo">Watering time</label>
+          <div class="duracion">
+            <input id="tiempo" type="number" value="10" min="1" />
+            <span>seconds</span>
+          </div>
+        </div>
+        <div class="mando-acciones">
+          <button class="accion regar" id="boton_START" onclick="enviarOrden('START')">
+            <span>
+              <b>Start watering</b>
+              <small>Opens the valve for the watering time</small>
+            </span>
+          </button>
+          <button class="accion bloquear" id="boton_BLOCK" onclick="enviarOrden('BLOCK')">
+            <span>
+              <b>Put out of service</b>
+              <small>Stops any watering and blocks the station</small>
+            </span>
+          </button>
+          <button class="accion activar" id="boton_ACTIVATE" onclick="enviarOrden('ACTIVATE')">
+            <span>
+              <b>Activate</b>
+              <small>Returns a blocked station to service</small>
+            </span>
+          </button>
+        </div>
+      </div>
+      <div id="respuesta_orden">Choose a station and an order. The result will appear here.</div>
+    </section>
+
+    <!-- pestañas -->
+    <nav class="pestanas" aria-label="Sections">
+      <button class="pestana activa" id="pestana_estaciones" onclick="verSeccion('estaciones')">Watering stations</button>
+      <button class="pestana" id="pestana_mapa" onclick="verSeccion('mapa')">Network map</button>
+    </nav>
+
+    <main class="cuerpo">
+      <div>
+        <section class="panel" id="seccion_estaciones">
+          <h2>
+            Watering stations
+            <small id="num_estaciones"></small>
+          </h2>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Location</th>
+                <th>Status</th>
+                <th class="derecha">Flow</th>
+                <th class="derecha">Water supplied</th>
+                <th>Operator</th>
+                <th>Last watering</th>
+              </tr>
+            </thead>
+            <tbody id="tabla"></tbody>
+          </table>
+        </section>
+
+        <section class="panel escondida" id="seccion_mapa">
+          <h2>
+            Network map
+            <small id="num_zonas"></small>
+          </h2>
+          <div class="plano" id="mapa"></div>
+        </section>
+      </div>
+
+      <div class="derecha-col">
+        <section class="panel">
+          <h2>Selected station</h2>
+          <div id="detalle"><p class="aviso">Click a station on the map or in the table to see its live readings and its last watering.</p></div>
+        </section>
+      </div>
+    </main>
+
+    <section class="panel registro">
+      <h2>
+        Application messages
+        <small>Full log, newest first</small>
+      </h2>
+      <div class="filtros" aria-label="Filter messages">
+        <button class="filtro activo" id="filtro_todos" onclick="elegirFiltro('todos')">All</button>
+        <button class="filtro" id="filtro_peticiones" onclick="elegirFiltro('peticiones')">Watering requests</button>
+        <button class="filtro" id="filtro_fugas" onclick="elegirFiltro('fugas')">Leaks</button>
+        <button class="filtro" id="filtro_central" onclick="elegirFiltro('central')">Central orders</button>
+        <button class="filtro" id="filtro_conexion" onclick="elegirFiltro('conexion')">Connections</button>
+        <select id="filtro_ws" onchange="pintarMensajes(ultimos_mensajes)" aria-label="Filter by station">
+          <option value="">All stations</option>
+        </select>
+      </div>
+      <div id="mensajes"></div>
+    </section>
+
+    <!-- cartel de confirmacion -->
+    <dialog id="confirmacion" aria-labelledby="conf_titulo">
+      <div class="conf-cuerpo">
+        <h3 id="conf_titulo"></h3>
+        <p id="conf_texto"></p>
+      </div>
+      <div class="conf-botones">
+        <button class="conf-cancelar" onclick="cerrarConfirmacion()">Cancel</button>
+        <button class="conf-aceptar" id="conf_aceptar" onclick="confirmarOrden()"></button>
+      </div>
+    </dialog>
+
+    <footer class="pie">
+      <span id="kafka"></span>
+      <span>WM_Central web panel</span>
+    </footer>
+
+    <script src="panel.js"></script>
+  </body>
+</html>
